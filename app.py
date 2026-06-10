@@ -4,22 +4,16 @@ import plotly.express as px
 from datetime import date, datetime
 from PIL import Image
 import os
-
-# Intento de importar fitparse de forma segura
-try:
-    import fitparse
-except ImportError:
-    fitparse = None
+import json
 
 # 1. CONFIGURACIÓN DE LA PÁGINA
 st.set_page_config(page_title="Hybrid Training Hub", page_icon="🏋️", layout="wide")
 
-# Rutas de archivos físicos en el servidor para persistencia real
 FILE_ACTIVIDADES = "datos_actividades.csv"
 FILE_SUENO = "datos_sueno.csv"
-FILE_PLAN = "datos_plan.json"  # Cambiado a JSON para guardar estructuras complejas de texto
+FILE_PLAN = "datos_plan.json"
 
-# 2. FUNCIONES DE CARGA Y GUARDADO SEGURO
+# 2. FUNCIONES DE PERSISTENCIA REAL
 def cargar_csv_persistente(file_path):
     if os.path.exists(file_path):
         try:
@@ -29,22 +23,35 @@ def cargar_csv_persistente(file_path):
     return pd.DataFrame()
 
 def guardar_plan_json(plan):
-    import json
     with open(FILE_PLAN, "w", encoding="utf-8") as f:
         json.dump(plan, f, ensure_ascii=False, indent=4)
 
 def cargar_plan_json():
-    import json
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    
+    # Plantilla de entrenamiento estructurada por defecto (Sustituye al 'Sin asignar')
+    plantilla_base = {
+        "Lunes": {"Fuerza": "Empuje (Pecho/Hombro/Tríceps) - Enfoque Hipertrofia", "Resistencia": "Carrera Continua: 45 min en Zona 2 (Ritmo cómodo)"},
+        "Martes": {"Fuerza": "Tracción (Espalda/Bíceps) + Core Estable", "Resistencia": "Series de Velocidad: Calentamiento + 5x1000m (Ritmo Umbral) + Enfriamiento"},
+        "Miércoles": {"Fuerza": "Pierna Completa (Sentadilla/Fuerza Máxima)", "Resistencia": "Descanso Activo / Movilidad articular y estiramientos"},
+        "Jueves": {"Fuerza": "Torso General / Enfoque Escalada (Core y Agarre)", "Resistencia": "Carrera de Tempo: 20 min Z2 + 20 min Z3/Z4 + 10 min Z1"},
+        "Viernes": {"Fuerza": "Full Body (Potencia / Transferencia)", "Resistencia": "Trote regenerativo: 30 min en Zona 1"},
+        "Sábado": {"Fuerza": "Sesión de Escalada en Bloque (Progresión de grado)", "Resistencia": "Tirada Larga: 75-90 min en Zona 2 (Acumulación de volumen)"},
+        "Domingo": {"Fuerza": "Descanso Total - Recuperación muscular", "Resistencia": "Descanso Total - Monitorizar VFC y Sueño"}
+    }
+    
     if os.path.exists(FILE_PLAN):
         try:
             with open(FILE_PLAN, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
-    return {dia: {"Fuerza": "Sin asignar", "Resistencia": "Sin asignar"} for dia in dias}
+            
+    # Si no existe el archivo, guardamos la plantilla base inmediatamente para que sea retenida
+    guardar_plan_json(plantilla_base)
+    return plantilla_base
 
-# Inicialización de datos cargando directamente desde los archivos del servidor
+# Inicialización de estados y carga desde servidor
 if 'df_actividades' not in st.session_state:
     st.session_state['df_actividades'] = cargar_csv_persistente(FILE_ACTIVIDADES)
 if 'df_sueno' not in st.session_state:
@@ -57,7 +64,7 @@ if 'imagenes_capturas' not in st.session_state:
 dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 dia_actual_texto = dias_semana[datetime.today().weekday()]
 
-# 3. NAVEGACIÓN
+# 3. NAVEGACIÓN LATERAL
 st.sidebar.title("Panel de Control")
 opcion_navegacion = st.sidebar.radio(
     "Navegación:",
@@ -69,8 +76,6 @@ if opcion_navegacion == "📥 Ingresar Datos":
     st.title("📥 Ingresar y Modificar Datos")
     
     st.header("1. Carga de Archivos")
-    st.write("Sube tus archivos. Se guardarán de forma permanente en el servidor.")
-    
     archivos_subidos = st.file_uploader(
         "Arrastra aquí tus archivos (.csv, .fit, .jpg, .png)", 
         type=["csv", "fit", "png", "jpg", "jpeg"],
@@ -81,83 +86,51 @@ if opcion_navegacion == "📥 Ingresar Datos":
         for archivo in archivos_subidos:
             nombre = archivo.name.lower()
             
-            # Imágenes
             if nombre.endswith(('.png', '.jpg', '.jpeg')):
                 img = Image.open(archivo)
                 st.session_state['imagenes_capturas'].append({"name": archivo.name, "image": img})
-                st.success(f"📷 Captura procesada temporalmente: {archivo.name}")
+                st.success(f"📷 Captura guardada en la sesión: {archivo.name}")
             
-            # Archivos FIT
-            elif nombre.endswith('.fit'):
-                if fitparse is not None:
-                    try:
-                        fitfile = fitparse.FitFile(archivo.getvalue())
-                        records = []
-                        for record in fitfile.get_messages('record'):
-                            datos = {data.name: data.value for data in record}
-                            records.append(datos)
-                        df_fit = pd.DataFrame(records)
-                        
-                        # Guardamos o acumulamos en el archivo persistente de actividades
-                        if not st.session_state['df_actividades'].empty:
-                            df_total = pd.concat([st.session_state['df_actividades'], df_fit]).drop_duplicates().reset_index(drop=True)
-                        else:
-                            df_total = df_fit
-                        
-                        st.session_state['df_actividades'] = df_total
-                        df_total.to_csv(FILE_ACTIVIDADES, index=False)
-                        st.success(f"⏱️ Archivo FIT procesado y guardado permanentemente: {archivo.name}")
-                    except Exception as e:
-                        st.error(f"Error procesando archivo FIT {archivo.name}: {e}")
-                else:
-                    st.error("Instala 'fitparse' en tu requirements.txt para leer archivos .fit")
-
-            # Archivos CSV
             elif nombre.endswith('.csv'):
                 try:
                     df_nuevo = pd.read_csv(archivo)
                     columnas_str = "".join(df_nuevo.columns).lower()
                     
-                    # Identificar tipo de CSV (Sueño / VFC)
                     if "sueño" in nombre or "sleep" in nombre or "vfc" in nombre or "vfc" in columnas_str or "hrv" in columnas_str:
-                        if not st.session_state['df_sueno'].empty:
-                            df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                        else:
-                            df_total = df_nuevo
+                        df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates().reset_index(drop=True) if not st.session_state['df_sueno'].empty else df_nuevo
                         st.session_state['df_sueno'] = df_total
                         df_total.to_csv(FILE_SUENO, index=False)
-                        st.success(f"💤 Datos de Salud/Sueño guardados permanentemente: {archivo.name}")
+                        st.success(f"💤 Datos de Salud/Sueño sincronizados y guardados ({len(df_total)} filas).")
                     
-                    # Identificar tipo de CSV (Actividades generales)
-                    elif "activities" in nombre or "activity" in nombre or "distancia" in columnas_str:
-                        if not st.session_state['df_actividades'].empty:
-                            df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                        else:
-                            df_total = df_nuevo
+                    elif "activities" in nombre or "activity" in nombre or "distancia" in columnas_str or "distance" in columnas_str:
+                        df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates().reset_index(drop=True) if not st.session_state['df_actividades'].empty else df_nuevo
                         st.session_state['df_actividades'] = df_total
                         df_total.to_csv(FILE_ACTIVIDADES, index=False)
-                        st.success(f"🏃‍♂️ Actividades guardadas permanentemente: {archivo.name}")
+                        st.success(f"🏃‍♂️ Actividades sincronizadas y guardadas ({len(df_total)} filas).")
                         
                 except Exception as e:
-                    st.error(f"Error con el CSV {archivo.name}: {e}")
+                    st.error(f"Error procesando el CSV {archivo.name}: {e}")
 
     st.write("---")
     
-    # 2. EDITOR MANUAL RESTAURADO Y PERSISTENTE
+    # 2. EDITOR MANUAL CON RETENCIÓN REFORZADA
     st.header("2. Modificar Entrenamientos de la Semana")
-    st.write("Los cambios realizados aquí quedan grabados en el servidor de forma fija.")
+    st.write("Modifica los bloques de texto abajo y presiona el botón 'Guardar Cambios Semanales' para consolidar.")
     
+    # Creamos un diccionario temporal en base a lo que ya existe
+    plan_editado = {}
     pestanas = st.tabs(dias_semana)
+    
     for i, dia in enumerate(dias_semana):
         with pestanas[i]:
-            f_val = st.text_area(f"💪 Fuerza - {dia}", value=st.session_state['plan_semanal'][dia]["Fuerza"], key=f"f_{dia}")
-            r_val = st.text_area(f"🏃‍♂️ Resistencia - {dia}", value=st.session_state['plan_semanal'][dia]["Resistencia"], key=f"r_{dia}")
+            f_val = st.text_area(f"💪 Fuerza - {dia}", value=st.session_state['plan_semanal'][dia]["Fuerza"], key=f"f_input_{dia}")
+            r_val = st.text_area(f"🏃‍♂️ Resistencia - {dia}", value=st.session_state['plan_semanal'][dia]["Resistencia"], key=f"r_input_{dia}")
+            plan_editado[dia] = {"Fuerza": f_val, "Resistencia": r_val}
             
-            # Si el usuario modifica el texto, lo guardamos inmediatamente en el archivo físico
-            if f_val != st.session_state['plan_semanal'][dia]["Fuerza"] or r_val != st.session_state['plan_semanal'][dia]["Resistencia"]:
-                st.session_state['plan_semanal'][dia]["Fuerza"] = f_val
-                st.session_state['plan_semanal'][dia]["Resistencia"] = r_val
-                guardar_plan_json(st.session_state['plan_semanal'])
+    if st.button("💾 Guardar Cambios Semanales", type="primary"):
+        st.session_state['plan_semanal'] = plan_editado
+        guardar_plan_json(plan_editado)
+        st.success("✅ ¡Rutina actualizada con éxito! Se reflejará de inmediato en Inicio y Microciclo.")
 
 # --- PÁGINA: INICIO ---
 elif opcion_navegacion == "🏠 Inicio":
@@ -166,8 +139,8 @@ elif opcion_navegacion == "🏠 Inicio":
     
     col_izq, col_der = st.columns([3, 2])
     with col_izq:
-        st.markdown("### 📋 Sesión Planificada")
-        entreno_hoy = st.session_state['plan_semanal'].get(dia_actual_texto, {"Fuerza": "Sin asignar", "Resistencia": "Sin asignar"})
+        st.markdown("### 📋 Sesión Planificada para Hoy")
+        entreno_hoy = st.session_state['plan_semanal'].get(dia_actual_texto, {"Fuerza": "No pautado", "Resistencia": "No pautado"})
         
         c1, c2 = st.columns(2)
         with c1:
@@ -178,13 +151,14 @@ elif opcion_navegacion == "🏠 Inicio":
     with col_der:
         st.markdown("### 🚦 Predisposición (Semáforo)")
         if not st.session_state['df_sueno'].empty:
-            st.success("🟢 Datos persistentes de salud detectados en el servidor. Listos para activar el algoritmo gráfico.")
+            st.success(f"🟢 {len(st.session_state['df_sueno'])} registros de salud cargados. Esperando nombres de columna para pintar el indicador.")
         else:
-            st.warning("⚠️ Sin datos de salud guardados. Sube un CSV de sueño para activar.")
+            st.warning("⚠️ Sin datos de salud guardados. Sube un archivo CSV de sueño para activar el cálculo dinámico.")
 
 # --- PÁGINA: MICROCICLO ---
 elif opcion_navegacion == "🗓️ Microciclo":
     st.title("🗓️ Programación Semanal (Microciclo)")
+    st.write("Cajas de entrenamiento consolidadas para esta semana:")
     
     cols_top = st.columns(3)
     cols_bottom = st.columns(4)
@@ -195,11 +169,11 @@ elif opcion_navegacion == "🗓️ Microciclo":
             st.markdown(f"#### {dia}")
             st.markdown(
                 f"""
-                <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #444; min-height: 180px;">
+                <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #444; min-height: 200px;">
                     <span style="color: #4da6ff;"><b>💪 Fuerza:</b></span><br>
-                    <span style="font-size: 0.9em;">{st.session_state['plan_semanal'][dia]['Fuerza']}</span><br><br>
+                    <span style="font-size: 0.9em; color: #dddddd;">{st.session_state['plan_semanal'][dia]['Fuerza']}</span><br><br>
                     <span style="color: #5cd65c;"><b>🏃‍♂️ Resistencia:</b></span><br>
-                    <span style="font-size: 0.9em;">{st.session_state['plan_semanal'][dia]['Resistencia']}</span>
+                    <span style="font-size: 0.9em; color: #dddddd;">{st.session_state['plan_semanal'][dia]['Resistencia']}</span>
                 </div>
                 """, 
                 unsafe_allow_html=True
@@ -220,10 +194,31 @@ elif opcion_navegacion == "🗺️ Macrociclo":
 # --- PÁGINA: MÉTRICAS Y EVOLUCIÓN ---
 elif opcion_navegacion == "📈 Métricas y Evolución":
     st.title("📈 Métricas y Evolución")
-    st.write(f"Registros de actividad guardados: {len(st.session_state['df_actividades'])}")
-    st.write(f"Registros de salud guardados: {len(st.session_state['df_sueno'])}")
-    st.info("Estructura de datos persistente lista. Siguiente paso: Dibujar las 6 gráficas.")
+    
+    df_act = st.session_state['df_actividades']
+    df_sueno = st.session_state['df_sueno']
+    
+    st.metric("Registros de Actividad Detectados", len(df_act))
+    st.metric("Registros de Salud/Sueño Detectados", len(df_sueno))
+    
+    st.markdown("### 🔍 Inspector de Columnas en Servidor")
+    st.write("Escríbeme los nombres que aparecen aquí abajo para activar el graficado automatizado:")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("**Columnas de Actividades:**")
+        if not df_act.empty:
+            st.code(list(df_act.columns))
+        else:
+            st.caption("Aún no has subido archivos de actividad.")
+    with c2:
+        st.write("**Columnas de Sueño/Salud:**")
+        if not df_sueno.empty:
+            st.code(list(df_sueno.columns))
+        else:
+            st.caption("Aún no has subido archivos de salud.")
 
 # --- PÁGINA: HISTÓRICOS ---
 elif opcion_navegacion == "📜 Históricos":
     st.title("📜 Históricos Anuales")
+    st.info("Módulo preparado para las analíticas macro-anuales.")
