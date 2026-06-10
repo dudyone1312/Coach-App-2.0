@@ -4,20 +4,20 @@ import plotly.express as px
 from datetime import date, datetime
 from PIL import Image
 import os
+import io
+
+# Intento de importar fitparse (se requiere añadir 'fitparse' a requirements.txt)
+try:
+    import fitparse
+except ImportError:
+    fitparse = None
 
 # 1. CONFIGURACIÓN DE LA PÁGINA
-st.set_page_config(
-    page_title="Hybrid Training Hub",
-    page_icon="🏋️",
-    layout="wide"
-)
+st.set_page_config(page_title="Hybrid Training Hub", page_icon="🏋️", layout="wide")
 
-# Nombres de los archivos locales donde se guardará tu histórico de forma persistente
 FILE_ACTIVIDADES = "datos_actividades.csv"
 FILE_SUENO = "datos_sueno.csv"
-FILE_PLAN = "datos_plan.csv"
 
-# 2. FUNCIÓN PARA CARGAR DATOS HISTÓRICOS AL INICIAR
 def cargar_historico(file_path):
     if os.path.exists(file_path):
         try:
@@ -26,36 +26,48 @@ def cargar_historico(file_path):
             return pd.DataFrame()
     return pd.DataFrame()
 
-# Inicializamos el estado de la aplicación con lo que haya guardado en el servidor
+# 2. ESTADO DE LA APP Y ALMACENAMIENTO
+dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+
 if 'df_actividades' not in st.session_state:
     st.session_state['df_actividades'] = cargar_historico(FILE_ACTIVIDADES)
 if 'df_sueno' not in st.session_state:
     st.session_state['df_sueno'] = cargar_historico(FILE_SUENO)
-if 'plan_entrenamiento' not in st.session_state:
-    st.session_state['plan_entrenamiento'] = cargar_historico(FILE_PLAN)
 if 'imagenes_capturas' not in st.session_state:
     st.session_state['imagenes_capturas'] = []
+    
+# Diccionario estructurado para la planificación semanal (Microciclo)
+if 'plan_semanal' not in st.session_state:
+    st.session_state['plan_semanal'] = {
+        dia: {"Fuerza": "Sin asignar", "Resistencia": "Sin asignar"} for dia in dias_semana
+    }
 
-# Configuración del calendario
-dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 dia_actual_texto = dias_semana[datetime.today().weekday()]
 
-# 3. NAVEGACIÓN LATERAL
+# 3. NAVEGACIÓN
 st.sidebar.title("Panel de Control")
 opcion_navegacion = st.sidebar.radio(
-    "Ir a:",
-    ["🏠 Inicio (Entreno del Día)", "📥 Ingresar Datos", "📈 Métricas y Evolución", "📜 Históricos"]
+    "Navegación:",
+    [
+        "🏠 Inicio", 
+        "🗓️ Microciclo", 
+        "🗺️ Macrociclo", 
+        "📥 Ingresar Datos", 
+        "📈 Métricas y Evolución", 
+        "📜 Históricos"
+    ]
 )
 
-# --- PÁGINA: INGRESSAR DATOS ---
+# --- PÁGINA: INGRESAR DATOS ---
 if opcion_navegacion == "📥 Ingresar Datos":
-    st.title("📥 Ingresar Datos")
-    st.write("Sube tus archivos para alimentar la base de datos histórica de tu entrenamiento.")
+    st.title("📥 Ingresar y Modificar Datos")
     
-    # Cuadro de importación en el inicio absoluto de la pestaña
+    # 1. SUBIDA DE ARCHIVOS
+    st.header("1. Carga de Archivos")
+    st.write("Soporta: .csv (sueño/vfc/actividades), .fit (actividad Garmin), .jpg/.png (capturas)")
     archivos_subidos = st.file_uploader(
-        "Arrastra o selecciona tus archivos aquí (CSV de Garmin, Planes, Capturas de pantalla)", 
-        type=["csv", "png", "jpg", "jpeg"],
+        "Arrastra aquí tus archivos", 
+        type=["csv", "fit", "png", "jpg", "jpeg"],
         accept_multiple_files=True
     )
     
@@ -63,144 +75,147 @@ if opcion_navegacion == "📥 Ingresar Datos":
         for archivo in archivos_subidos:
             nombre = archivo.name.lower()
             
-            # A. Procesamiento de IMÁGENES
+            # Imágenes
             if nombre.endswith(('.png', '.jpg', '.jpeg')):
                 img = Image.open(archivo)
-                if archivo.name not in [x['name'] for x in st.session_state['imagenes_capturas']]:
-                    st.session_state['imagenes_capturas'].append({"name": archivo.name, "image": img})
-                    st.success(f"📷 Imagen temporal guardada: {archivo.name}")
+                st.session_state['imagenes_capturas'].append({"name": archivo.name, "image": img})
+                st.success(f"📷 Captura guardada: {archivo.name}")
             
-            # B. Procesamiento de CSVs con acumulación histórica
+            # Archivos FIT de Garmin
+            elif nombre.endswith('.fit'):
+                if fitparse is None:
+                    st.error("Librería 'fitparse' no encontrada. Añádela al requirements.txt")
+                else:
+                    try:
+                        # Leer el archivo binario
+                        fitfile = fitparse.FitFile(archivo.getvalue())
+                        records = []
+                        for record in fitfile.get_messages('record'):
+                            datos = {data.name: data.value for data in record}
+                            records.append(datos)
+                        df_fit = pd.DataFrame(records)
+                        st.success(f"⏱️ Archivo .fit ({archivo.name}) procesado. {len(df_fit)} registros encontrados.")
+                        # Aquí se integraría con df_actividades una vez definamos tus columnas clave
+                    except Exception as e:
+                        st.error(f"Error leyendo {archivo.name}: {e}")
+
+            # Archivos CSV
             elif nombre.endswith('.csv'):
                 try:
                     df_nuevo = pd.read_csv(archivo)
                     columnas_str = "".join(df_nuevo.columns).lower()
                     
-                    # Identificar si es Sueño/Salud
-                    if "sueño" in nombre or "sleep" in nombre or "vfc" in columnas_str or "hrv" in columnas_str:
-                        if not st.session_state['df_sueno'].empty:
-                            # Combinar nuevo con viejo y eliminar duplicados exactos
-                            df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                        else:
-                            df_total = df_nuevo
+                    if "sueño" in nombre or "sleep" in nombre or "vfc" in nombre or "vfc" in columnas_str:
+                        df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates() if not st.session_state['df_sueno'].empty else df_nuevo
                         st.session_state['df_sueno'] = df_total
-                        df_total.to_csv(FILE_SUENO, index=False) # Guardado persistente en el servidor
-                        st.success(f"💤 Datos de sueño acumulados y guardados de forma persistente.")
+                        df_total.to_csv(FILE_SUENO, index=False)
+                        st.success(f"💤 Datos de sueño/VFC actualizados: {archivo.name}")
                     
-                    # Identificar si es Actividades
-                    elif "actividad" in nombre or "activity" in nombre or "distancia" in columnas_str or "ritmo" in columnas_str:
-                        if not st.session_state['df_actividades'].empty:
-                            df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                        else:
-                            df_total = df_nuevo
+                    elif "activities" in nombre or "activity" in nombre:
+                        df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates() if not st.session_state['df_actividades'].empty else df_nuevo
                         st.session_state['df_actividades'] = df_total
-                        df_total.to_csv(FILE_ACTIVIDADES, index=False) # Guardado persistente en el servidor
-                        st.success(f"🏃‍♂️ Historial de actividades acumulado y guardado de forma persistente.")
-                    
-                    # Identificar si es el Plan de Entrenamiento enviado por Gemini
-                    else:
-                        st.session_state['plan_entrenamiento'] = df_nuevo
-                        df_nuevo.to_csv(FILE_PLAN, index=False) # Sobrescribe el plan actual
-                        st.success(f"📋 Nueva planificación de entrenamientos fijada con éxito.")
+                        df_total.to_csv(FILE_ACTIVIDADES, index=False)
+                        st.success(f"🏃‍♂️ Actividades actualizadas: {archivo.name}")
                         
                 except Exception as e:
-                    st.error(f"Error al procesar el archivo CSV {archivo.name}: {e}")
+                    st.error(f"Error con el CSV {archivo.name}: {e}")
 
-    # Visualizador discreto de imágenes al final
-    if st.session_state['imagenes_capturas']:
-        with st.expander("Ver imágenes adjuntas en esta sesión"):
-            for item in st.session_state['imagenes_capturas']:
-                st.write(f"Archivo: {item['name']}")
-                st.image(item['image'], use_column_width=True)
-
+    st.write("---")
+    
+    # 2. EDITOR MANUAL DE RUTINAS (Recuperado)
+    st.header("2. Modificar Entrenamientos de la Semana")
+    st.write("Cualquier cambio aquí se reflejará automáticamente en el Microciclo y en la pantalla de Inicio.")
+    
+    pestanas = st.tabs(dias_semana)
+    for i, dia in enumerate(dias_semana):
+        with pestanas[i]:
+            f_val = st.text_area(f"💪 Fuerza - {dia}", value=st.session_state['plan_semanal'][dia]["Fuerza"], key=f"f_{dia}")
+            r_val = st.text_area(f"🏃‍♂️ Resistencia - {dia}", value=st.session_state['plan_semanal'][dia]["Resistencia"], key=f"r_{dia}")
+            
+            # Guardado automático en el diccionario de la sesión
+            st.session_state['plan_semanal'][dia]["Fuerza"] = f_val
+            st.session_state['plan_semanal'][dia]["Resistencia"] = r_val
+            
+    st.success("Cambios en la rutina guardados en memoria.")
 
 # --- PÁGINA: INICIO ---
-elif opcion_navegacion == "🏠 Inicio (Entreno del Día)":
+elif opcion_navegacion == "🏠 Inicio":
     st.title("Hub de Entrenamiento Híbrido")
     st.subheader(f"{dia_actual_texto}, {date.today().strftime('%d/%m/%Y')}")
     
-    col_izquierda, col_derecha = st.columns([3, 2])
+    col_izq, col_der = st.columns([3, 2])
     
-    # COLUMNA IZQUIERDA: Sesión del día extraída del CSV del plan
-    with col_izquierda:
+    with col_izq:
         st.markdown("### 📋 Sesión Planificada")
-        df_plan = st.session_state['plan_entrenamiento']
+        # Leemos los datos directamente de lo que se haya escrito en la pestaña Ingresar Datos
+        entreno_hoy = st.session_state['plan_semanal'][dia_actual_texto]
         
-        if not df_plan.empty:
-            # Estandarizamos columnas a minúsculas
-            df_plan.columns = [c.lower() for c in df_plan.columns]
-            # Buscamos si alguna celda contiene el nombre del día de hoy
-            filtro_dia = df_plan[df_plan.astype(str).sum(axis=1).str.lower().str.contains(dia_actual_texto.lower())]
-            
-            if not filtro_dia.empty:
-                st.dataframe(filtro_dia, use_container_width=True)
-            else:
-                st.info(f"No se detectaron entrenamientos pautados para el día **{dia_actual_texto}** en tu archivo de planificación.")
-        else:
-            st.warning("⚠️ No hay ninguna rutina activa en el sistema. Sube el CSV con tu programación en la pestaña 'Ingresar Datos'.")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.info(f"**💪 Fuerza:**\n\n{entreno_hoy['Fuerza']}")
+        with c2:
+            st.success(f"**🏃‍♂️ Resistencia:**\n\n{entreno_hoy['Resistencia']}")
 
-    # COLUMNA DERECHA: Semáforo de predisposición (Cero absoluto inicial)
-    with col_derecha:
-        st.markdown("### 🚦 Predisposición para Entrenar")
-        df_sueno = st.session_state['df_sueno']
+    with col_der:
+        st.markdown("### 🚦 Predisposición (Semáforo)")
+        if not st.session_state['df_sueno'].empty:
+            st.info("🔄 Procesando últimas métricas de salud (Esperando mapeo de columnas)...")
+        else:
+            st.warning("⚠️ Sin datos de sueño/VFC para calcular estado.")
+
+# --- PÁGINA: MICROCICLO ---
+elif opcion_navegacion == "🗓️ Microciclo":
+    st.title("🗓️ Programación Semanal (Microciclo)")
+    st.write("Vista completa de la semana. Edita estos ejercicios en la pestaña 'Ingresar Datos'.")
+    
+    # Creamos un diseño de cuadrícula (3 columnas arriba, 4 abajo para distribuir los 7 días)
+    cols_top = st.columns(3)
+    cols_bottom = st.columns(4)
+    
+    for i, dia in enumerate(dias_semana):
+        # Seleccionamos la columna correspondiente
+        col = cols_top[i] if i < 3 else cols_bottom[i-3]
         
-        if not df_sueno.empty:
-            st.info("🔄 Procesando últimas métricas de salud detectadas...")
-            # Aquí se inyectará el algoritmo exacto del semáforo en cuanto conozca tus columnas de sueño
-        else:
-            st.warning("⚠️ Semáforo inactivo. Sube tus métricas de sueño y VFC para calcular tu predisposición diaria.")
+        with col:
+            # Creamos una "caja sombreada" usando contenedores y markdown
+            st.markdown(f"#### {dia}")
+            st.markdown(
+                f"""
+                <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #444;">
+                    <span style="color: #4da6ff;"><b>💪 Fuerza:</b></span><br>
+                    <span style="font-size: 0.9em;">{st.session_state['plan_semanal'][dia]['Fuerza']}</span><br><br>
+                    <span style="color: #5cd65c;"><b>🏃‍♂️ Resistencia:</b></span><br>
+                    <span style="font-size: 0.9em;">{st.session_state['plan_semanal'][dia]['Resistencia']}</span>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+            st.write("") # Espaciado
 
+# --- PÁGINA: MACROCICLO ---
+elif opcion_navegacion == "🗺️ Macrociclo":
+    st.title("🗺️ Visión Global (Macrociclo)")
+    
+    # Matriz estructurada en tabla
+    st.write("### Objetivos de la Fase Actual")
+    
+    # Datos en crudo para renderizar una tabla limpia
+    datos_macro = {
+        "Semana": ["Semana 1", "Semana 2", "Semana 3", "Semana 4 (Descarga)"],
+        "Fase Entrenamiento": ["Acumulación", "Intensificación", "Realización (Pico)", "Descarga / Tapering"],
+        "Objetivo Fuerza": ["Volumen (Hipertrofia/Fuerza base)", "Fuerza Máxima (Subida de % RM)", "Mantenimiento / Potencia", "Recuperación activa"],
+        "Objetivo Resistencia": ["Base aeróbica (Z2)", "Umbral y Series (Z4)", "Especificidad ritmo carrera", "Trote suave (Z1)"]
+    }
+    
+    st.table(pd.DataFrame(datos_macro))
+    st.caption("Esta tabla puede adaptarse para mostrar periodizaciones anuales más adelante.")
 
 # --- PÁGINA: MÉTRICAS Y EVOLUCIÓN ---
 elif opcion_navegacion == "📈 Métricas y Evolución":
     st.title("📈 Métricas y Evolución")
-    
-    df_act = st.session_state['df_actividades']
-    df_sueno = st.session_state['df_sueno']
-    
-    if df_act.empty and df_sueno.empty:
-        st.info("📊 Panel limpio. Las 6 gráficas de evolución se activarán automáticamente en cuanto se detecten datos históricos en el sistema.")
-    
-    # 1. Gráfica de FC Reposo y VFC (Quincena)
-    st.markdown("#### 1. Evolución Quincenal: FC Reposo vs VFC")
-    if not df_sueno.empty:
-        st.caption("Falta mapear las columnas exactas de tu archivo de sueño para dibujar la línea temporal.")
-    else:
-        st.caption("Esperando datos de salud...")
-
-    # 2. Gráfica del Estado de Entrenamiento
-    st.markdown("#### 2. Estado de Entrenamiento actual")
-    if not df_act.empty:
-        st.caption("Falta definir las variables de carga de tu archivo de actividades.")
-    else:
-        st.caption("Esperando datos de actividades...")
-
-    # 3. Ritmo medio min/km en las 5 zonas de FC de carrera
-    st.markdown("#### 3. Ritmo Medio (min/km) por Zonas de Frecuencia Cardíaca")
-    if not df_act.empty:
-        st.caption("Falta configurar los rangos de tus zonas de FC.")
-    else:
-        st.caption("Esperando datos de carrera...")
-
-    # 4. Tabla de cargas máximas de Fuerza (RM Actual vs Medio Anterior)
-    st.markdown("#### 4. Control de Cargas de Fuerza")
-    df_fuerza_vacio = pd.DataFrame(columns=["Ejercicio", "Peso Máximo Levantado (RM)", "Peso Anterior Medio"])
-    st.dataframe(df_fuerza_vacio, use_container_width=True)
-
-    # 5. Km recorridos por semana en un mes
-    st.markdown("#### 5. Volumen Semanal de Carrera (Mes Actual)")
-    if not df_act.empty:
-        st.caption("Falta estructurar el contador de kilómetros semanales.")
-    else:
-        st.caption("Esperando kilometraje...")
-
-    # 6. Gráfico de Grado Máximo de Escalada (Vía y Bloque)
-    st.markdown("#### 6. Progresión en Escalada (Grado Máximo por Semana)")
-    df_escalada_vacio = pd.DataFrame(columns=["Semana", "Escalada Interior", "Escalada Exterior", "Bloque / Boulder"])
-    st.dataframe(df_escalada_vacio, use_container_width=True)
-
+    st.info("📊 Panel de gráficas. Esperando a definir las columnas de tus CSV.")
 
 # --- PÁGINA: HISTÓRICOS ---
 elif opcion_navegacion == "📜 Históricos":
     st.title("📜 Históricos Anuales")
-    st.info("Sección preparada y limpia. Sin datos simulados.")
+    st.info("Sección preparada para cruzar datos anuales.")
