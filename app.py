@@ -1,72 +1,104 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 
-# 1. CONFIGURACIÓN INICIAL DE LA PÁGINA
-# Esto debe ser lo primero que se ejecuta en Streamlit. Define el título y el ancho.
+# 1. CONFIGURACIÓN DE LA PÁGINA
 st.set_page_config(
     page_title="Hybrid Training Hub",
     page_icon="🏋️",
     layout="wide"
 )
 
-# 2. SISTEMA DE NAVEGACIÓN
-# Creamos un menú desplegable en la barra lateral
+# 2. BASE DE DATOS SIMULADA (Para que la app funcione mientras no subas archivos)
+# En el futuro, esto se guardará en archivos locales del servidor
+if 'entrenamientos' not in st.session_state:
+    st.session_state['entrenamientos'] = {
+        "Lunes": {"Fuerza": "Empuje (Pecho/Hombro/Tríceps)", "Resistencia": "🏃‍♂️ 45 min Carrera Z2"},
+        "Martes": {"Fuerza": "Tracción (Espalda/Bíceps)", "Resistencia": "🚴‍♂️ 60 min Ciclismo Z2"},
+        "Miércoles": {"Fuerza": "Pierna (Énfasis Cuádriceps)", "Resistencia": "Descanso Activo"},
+        "Jueves": {"Fuerza": "Torso Recordatorio", "Resistencia": "🏃‍♂️ Series de velocidad 5x1000m"},
+        "Viernes": {"Fuerza": "Pierna (Énfasis Cadena Posterior)", "Resistencia": "🏃‍♂️ 30 min Carrera Z1"},
+        "Sábado": {"Fuerza": "Descanso", "Resistencia": "🏃‍♂️ Tirada Larga 90 min"},
+        "Domingo": {"Fuerza": "Descanso Total", "Resistencia": "Descanso Total"}
+    }
+
+# Días de la semana en español para emparejar con la fecha actual
+dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+dia_actual_texto = dias_semana[datetime.today().weekday()]
+
+# 3. NAVEGACIÓN
 st.sidebar.title("Panel de Control")
 opcion_navegacion = st.sidebar.radio(
     "Ir a:",
     ["🏠 Inicio (Entreno del Día)", "📥 Ingresar Datos Semanales", "📈 Dashboard de Métricas"]
 )
 
-# 3. LÓGICA DE LAS PÁGINAS
-
 # --- PÁGINA 1: INICIO ---
 if opcion_navegacion == "🏠 Inicio (Entreno del Día)":
-    st.title("Entrenamiento del Día")
-    st.subheader(f"Fecha: {date.today().strftime('%d/%m/%Y')}")
+    st.title("🏋️ Tu Plan para Hoy")
+    st.subheader(f"{dia_actual_texto}, {date.today().strftime('%d/%m/%Y')}")
     
-    # Aquí simularemos la lectura del entreno que te ha pautado Gemini
-    # Más adelante, esto lo leeremos de un archivo donde guardes tus rutinas
-    st.info("💡 Consejo del bloque: Estás en un microciclo de carga (Semana 3). Prioriza el RPE indicado sobre los ritmos absolutos.")
+    # Extraemos el entreno del diccionario según el día de la semana
+    entreno_hoy = st.session_state['entrenamientos'].get(dia_actual_texto, {"Fuerza": "Descanso", "Resistencia": "Descanso"})
     
-    # Dividimos la pantalla en dos columnas para separar Fuerza y Resistencia (Híbrido)
     col1, col2 = st.columns(2)
     
     with col1:
-        st.header("🏋️ Fuerza")
-        st.write("**Bloque principal:** 5/3/1 Back Squat")
-        st.write("- Serie 1: 5 x 65%")
-        st.write("- Serie 2: 5 x 75%")
-        st.write("- Serie 3: 5+ x 85%")
-        st.write("**Accesorios:**")
-        st.checkbox("Zancadas Búlgaras 3x10")
-        st.checkbox("Plancha abdominal 3x1 min")
-
+        st.markdown("### 💪 Sesión de Fuerza")
+        st.info(entreno_hoy["Fuerza"])
+        
     with col2:
-        st.header("🏃‍♂️ Resistencia (Garmin)")
-        st.write("**Tipo de sesión:** Series Z4 (Umbral)")
-        st.write("**Estructura:**")
-        st.write("- Calentamiento: 15 min Z1/Z2")
-        st.write("- Principal: 4 x 5 min en Z4 (Recuperación 2 min trote suave)")
-        st.write("- Enfriamiento: 10 min Z1")
-        st.checkbox("Sesión completada y sincronizada en Garmin")
+        st.markdown("### 🏃‍♂️ Sesión de Resistencia")
+        st.success(entreno_hoy["Resistencia"])
 
 # --- PÁGINA 2: INGRESO DE DATOS ---
 elif opcion_navegacion == "📥 Ingresar Datos Semanales":
     st.title("Registro de Datos Semanales")
-    st.write("Sube tus archivos CSV de Garmin o introduce tus RMs y métricas de fuerza.")
     
-    # Zona de subida de archivos
-    archivo_garmin = st.file_uploader("Sube tu CSV de Garmin Connect", type=["csv"])
+    # SECCIÓN A: Actualizar el plan de la semana (Texto de Gemini)
+    st.header("1. Actualizar Plan de Entrenamiento")
+    st.write("Modifica el entrenamiento de cada día de la semana según lo pautado:")
+    
+    # Creamos pestañas para no saturar la pantalla
+    pestanas = st.tabs(dias_semana)
+    
+    for i, dia in enumerate(dias_semana):
+        with pestanas[i]:
+            st.write(f"Editar entrenamiento para el **{dia}**")
+            # Cajas de texto que se rellenan con el valor actual
+            fuerza_edit = st.text_area(f"Fuerza - {dia}", value=st.session_state['entrenamientos'][dia]["Fuerza"], key=f"f_{dia}")
+            resistencia_edit = st.text_area(f"Resistencia - {dia}", value=st.session_state['entrenamientos'][dia]["Resistencia"], key=f"r_{dia}")
+            
+            # Guardamos los cambios en el estado temporal de la app
+            st.session_state['entrenamientos'][dia]["Fuerza"] = fuerza_edit
+            st.session_state['entrenamientos'][dia]["Resistencia"] = resistencia_edit
+
+    st.success("Plan semanal actualizado en la memoria de la aplicación.")
+    
+    st.write("---")
+    
+    # SECCIÓN B: Carga del CSV de Garmin
+    st.header("2. Cargar Métricas de Garmin")
+    archivo_garmin = st.file_uploader("Sube el CSV de actividades de Garmin Connect", type=["csv"])
     
     if archivo_garmin is not None:
-        # Si se sube un archivo, pandas lo lee y Streamlit lo muestra
-        df_garmin = pd.read_csv(archivo_garmin)
-        st.success("Archivo subido con éxito.")
-        st.dataframe(df_garmin.head()) # Muestra solo las primeras filas
+        try:
+            # Leemos el CSV
+            df = pd.read_csv(archivo_garmin)
+            
+            st.success("¡Archivo leído correctamente!")
+            
+            # Mostramos un resumen de lo que contiene el CSV para comprobar las columnas
+            st.write("### Vista previa de tus datos de Garmin:")
+            st.dataframe(df.head(5))
+            
+            st.write("### Columnas detectadas en tu archivo:")
+            st.write(list(df.columns))
+            
+        except Exception as e:
+            st.error(f"Error al procesar el archivo: {e}")
 
 # --- PÁGINA 3: DASHBOARD ---
 elif opcion_navegacion == "📈 Dashboard de Métricas":
     st.title("Métricas y Progresión")
-    st.write("Aquí irán las gráficas de volumen, carga aguda/crónica y distribución de zonas.")
-    st.warning("Módulo en construcción. Se implementará en el siguiente paso de programación.")
+    st.info("Próximo paso: Aquí crearemos las gráficas automáticas en cuanto confirmemos las columnas de tu CSV de Garmin.")
