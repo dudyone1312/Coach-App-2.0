@@ -13,7 +13,7 @@ FILE_ACTIVIDADES = "datos_actividades.csv"
 FILE_SUENO = "datos_sueno.csv"
 FILE_PLAN = "datos_plan.json"
 
-# 2. FUNCIONES DE PERSISTENCIA REAL
+# 2. FUNCIONES DE PERSISTENCIA REAL (SIN DATOS FALSOS)
 def cargar_csv_persistente(file_path):
     if os.path.exists(file_path):
         try:
@@ -28,17 +28,8 @@ def guardar_plan_json(plan):
 
 def cargar_plan_json():
     dias = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-    
-    # Plantilla de entrenamiento estructurada por defecto (Sustituye al 'Sin asignar')
-    plantilla_base = {
-        "Lunes": {"Fuerza": "Empuje (Pecho/Hombro/Tríceps) - Enfoque Hipertrofia", "Resistencia": "Carrera Continua: 45 min en Zona 2 (Ritmo cómodo)"},
-        "Martes": {"Fuerza": "Tracción (Espalda/Bíceps) + Core Estable", "Resistencia": "Series de Velocidad: Calentamiento + 5x1000m (Ritmo Umbral) + Enfriamiento"},
-        "Miércoles": {"Fuerza": "Pierna Completa (Sentadilla/Fuerza Máxima)", "Resistencia": "Descanso Activo / Movilidad articular y estiramientos"},
-        "Jueves": {"Fuerza": "Torso General / Enfoque Escalada (Core y Agarre)", "Resistencia": "Carrera de Tempo: 20 min Z2 + 20 min Z3/Z4 + 10 min Z1"},
-        "Viernes": {"Fuerza": "Full Body (Potencia / Transferencia)", "Resistencia": "Trote regenerativo: 30 min en Zona 1"},
-        "Sábado": {"Fuerza": "Sesión de Escalada en Bloque (Progresión de grado)", "Resistencia": "Tirada Larga: 75-90 min en Zona 2 (Acumulación de volumen)"},
-        "Domingo": {"Fuerza": "Descanso Total - Recuperación muscular", "Resistencia": "Descanso Total - Monitorizar VFC y Sueño"}
-    }
+    # Inicialización rigurosamente vacía, sin ejemplos del sistema
+    plantilla_limpia = {dia: {"Fuerza": "", "Resistencia": ""} for dia in dias}
     
     if os.path.exists(FILE_PLAN):
         try:
@@ -47,11 +38,10 @@ def cargar_plan_json():
         except Exception:
             pass
             
-    # Si no existe el archivo, guardamos la plantilla base inmediatamente para que sea retenida
-    guardar_plan_json(plantilla_base)
-    return plantilla_base
+    guardar_plan_json(plantilla_limpia)
+    return plantilla_limpia
 
-# Inicialización de estados y carga desde servidor
+# Inicialización de estados leyendo el servidor
 if 'df_actividades' not in st.session_state:
     st.session_state['df_actividades'] = cargar_csv_persistente(FILE_ACTIVIDADES)
 if 'df_sueno' not in st.session_state:
@@ -100,24 +90,22 @@ if opcion_navegacion == "📥 Ingresar Datos":
                         df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates().reset_index(drop=True) if not st.session_state['df_sueno'].empty else df_nuevo
                         st.session_state['df_sueno'] = df_total
                         df_total.to_csv(FILE_SUENO, index=False)
-                        st.success(f"💤 Datos de Salud/Sueño sincronizados y guardados ({len(df_total)} filas).")
+                        st.success(f"💤 Datos de Salud/Sueño sincronizados ({len(df_total)} filas totales).")
                     
                     elif "activities" in nombre or "activity" in nombre or "distancia" in columnas_str or "distance" in columnas_str:
                         df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates().reset_index(drop=True) if not st.session_state['df_actividades'].empty else df_nuevo
                         st.session_state['df_actividades'] = df_total
                         df_total.to_csv(FILE_ACTIVIDADES, index=False)
-                        st.success(f"🏃‍♂️ Actividades sincronizadas y guardadas ({len(df_total)} filas).")
+                        st.success(f"🏃‍♂️ Actividades sincronizadas ({len(df_total)} filas totales).")
                         
                 except Exception as e:
                     st.error(f"Error procesando el CSV {archivo.name}: {e}")
 
     st.write("---")
     
-    # 2. EDITOR MANUAL CON RETENCIÓN REFORZADA
     st.header("2. Modificar Entrenamientos de la Semana")
-    st.write("Modifica los bloques de texto abajo y presiona el botón 'Guardar Cambios Semanales' para consolidar.")
+    st.write("Escribe o modifica libremente los entrenamientos. Déjalos vacíos si no hay actividad programada.")
     
-    # Creamos un diccionario temporal en base a lo que ya existe
     plan_editado = {}
     pestanas = st.tabs(dias_semana)
     
@@ -130,7 +118,7 @@ if opcion_navegacion == "📥 Ingresar Datos":
     if st.button("💾 Guardar Cambios Semanales", type="primary"):
         st.session_state['plan_semanal'] = plan_editado
         guardar_plan_json(plan_editado)
-        st.success("✅ ¡Rutina actualizada con éxito! Se reflejará de inmediato en Inicio y Microciclo.")
+        st.success("✅ Rutina actualizada. Cambios aplicados en Microciclo e Inicio.")
 
 # --- PÁGINA: INICIO ---
 elif opcion_navegacion == "🏠 Inicio":
@@ -140,25 +128,31 @@ elif opcion_navegacion == "🏠 Inicio":
     col_izq, col_der = st.columns([3, 2])
     with col_izq:
         st.markdown("### 📋 Sesión Planificada para Hoy")
-        entreno_hoy = st.session_state['plan_semanal'].get(dia_actual_texto, {"Fuerza": "No pautado", "Resistencia": "No pautado"})
+        entreno_hoy = st.session_state['plan_semanal'].get(dia_actual_texto, {"Fuerza": "", "Resistencia": ""})
         
         c1, c2 = st.columns(2)
         with c1:
-            st.info(f"**💪 Fuerza:**\n\n{entreno_hoy['Fuerza']}")
+            if entreno_hoy['Fuerza'].strip():
+                st.info(f"**💪 Fuerza:**\n\n{entreno_hoy['Fuerza']}")
+            else:
+                st.caption("No hay entrenamiento de Fuerza registrado para hoy.")
         with c2:
-            st.success(f"**🏃‍♂️ Resistencia:**\n\n{entreno_hoy['Resistencia']}")
+            if entreno_hoy['Resistencia'].strip():
+                st.success(f"**🏃‍♂️ Resistencia:**\n\n{entreno_hoy['Resistencia']}")
+            else:
+                st.caption("No hay entrenamiento de Resistencia registrado para hoy.")
 
     with col_der:
         st.markdown("### 🚦 Predisposición (Semáforo)")
-        if not st.session_state['df_sueno'].empty:
-            st.success(f"🟢 {len(st.session_state['df_sueno'])} registros de salud cargados. Esperando nombres de columna para pintar el indicador.")
+        df_sueno = st.session_state['df_sueno']
+        if not df_sueno.empty:
+            st.success("🟢 Datos de salud detectados. Ve a 'Métricas y Evolución' para enlazar las columnas y activar los indicadores.")
         else:
-            st.warning("⚠️ Sin datos de salud guardados. Sube un archivo CSV de sueño para activar el cálculo dinámico.")
+            st.warning("⚠️ Sin datos de salud guardados.")
 
 # --- PÁGINA: MICROCICLO ---
 elif opcion_navegacion == "🗓️ Microciclo":
     st.title("🗓️ Programación Semanal (Microciclo)")
-    st.write("Cajas de entrenamiento consolidadas para esta semana:")
     
     cols_top = st.columns(3)
     cols_bottom = st.columns(4)
@@ -167,13 +161,18 @@ elif opcion_navegacion == "🗓️ Microciclo":
         col = cols_top[i] if i < 3 else cols_bottom[i-3]
         with col:
             st.markdown(f"#### {dia}")
+            fuerza_txt = st.session_state['plan_semanal'][dia]['Fuerza']
+            res_txt = st.session_state['plan_semanal'][dia]['Resistencia']
+            
+            # Solo pintamos si contienen texto real
+            fuerza_html = f"<span style='color: #4da6ff;'><b>💪 Fuerza:</b></span><br><span style='font-size: 0.9em;'>{fuerza_txt}</span><br><br>" if fuerza_txt.strip() else "<span style='color: #666;'>Fuerza: Vacío</span><br><br>"
+            res_html = f"<span style='color: #5cd65c;'><b>🏃‍♂️ Resistencia:</b></span><br><span style='font-size: 0.9em;'>{res_txt}</span>" if res_txt.strip() else "<span style='color: #666;'>Resistencia: Vacío</span>"
+            
             st.markdown(
                 f"""
-                <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #444; min-height: 200px;">
-                    <span style="color: #4da6ff;"><b>💪 Fuerza:</b></span><br>
-                    <span style="font-size: 0.9em; color: #dddddd;">{st.session_state['plan_semanal'][dia]['Fuerza']}</span><br><br>
-                    <span style="color: #5cd65c;"><b>🏃‍♂️ Resistencia:</b></span><br>
-                    <span style="font-size: 0.9em; color: #dddddd;">{st.session_state['plan_semanal'][dia]['Resistencia']}</span>
+                <div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #444; min-height: 180px;">
+                    {fuerza_html}
+                    {res_html}
                 </div>
                 """, 
                 unsafe_allow_html=True
@@ -198,27 +197,75 @@ elif opcion_navegacion == "📈 Métricas y Evolución":
     df_act = st.session_state['df_actividades']
     df_sueno = st.session_state['df_sueno']
     
-    st.metric("Registros de Actividad Detectados", len(df_act))
-    st.metric("Registros de Salud/Sueño Detectados", len(df_sueno))
+    col_m1, col_m2 = st.columns(2)
+    col_m1.metric("Registros de Actividades (Histórico)", len(df_act))
+    col_m2.metric("Registros de Salud/Sueño (Histórico)", len(df_sueno))
     
-    st.markdown("### 🔍 Inspector de Columnas en Servidor")
-    st.write("Escríbeme los nombres que aparecen aquí abajo para activar el graficado automatizado:")
+    st.write("---")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        st.write("**Columnas de Actividades:**")
-        if not df_act.empty:
-            st.code(list(df_act.columns))
-        else:
-            st.caption("Aún no has subido archivos de actividad.")
-    with c2:
-        st.write("**Columnas de Sueño/Salud:**")
-        if not df_sueno.empty:
-            st.code(list(df_sueno.columns))
-        else:
-            st.caption("Aún no has subido archivos de salud.")
+    # ASIGNADOR DINÁMICO DE COLUMNAS (Para que no falle ninguna gráfica)
+    st.sidebar.markdown("## ⚙️ Mapeo de Variables")
+    st.sidebar.write("Selecciona qué columna corresponde a cada métrica de tus archivos:")
+    
+    col_fecha_act, col_dist, col_ritmo = None, None, None
+    col_fecha_sueno, col_vfc, col_reposo = None, None, None
+    
+    if not df_act.empty:
+        col_fecha_act = st.sidebar.selectbox("Fecha (Actividades)", list(df_act.columns), key="c_f_a")
+        col_dist = st.sidebar.selectbox("Distancia / Volumen", list(df_act.columns), key="c_d_a")
+        col_ritmo = st.sidebar.selectbox("Ritmo / Velocidad Media", list(df_act.columns), key="c_r_a")
+        
+    if not df_sueno.empty:
+        col_fecha_sueno = st.sidebar.selectbox("Fecha (Sueño)", list(df_sueno.columns), key="c_f_s")
+        col_vfc = st.sidebar.selectbox("VFC / HRV", list(df_sueno.columns), key="c_v_s")
+        col_reposo = st.sidebar.selectbox("FC Reposo", list(df_sueno.columns), key="c_r_s")
+
+    # RENDERIZADO DE LAS GRÁFICAS EN BASE A TU SELECCIÓN SIDEBAR
+    
+    # Gráfica 1: FC Reposo vs VFC
+    st.subheader("1. Evolución de Salud: FC Reposo vs VFC (Histórico)")
+    if not df_sueno.empty and col_vfc and col_reposo and col_fecha_sueno:
+        try:
+            df_sueno_sorted = df_sueno.sort_values(by=col_fecha_sueno)
+            fig1 = px.line(df_sueno_sorted, x=col_fecha_sueno, y=[col_vfc, col_reposo], markers=True, title="Tendencia de Recuperación")
+            st.plotly_chart(fig1, use_container_width=True)
+        except Exception as e:
+            st.error(f"No se pudo generar el gráfico 1: {e}")
+    else:
+        st.info("Configura las columnas de Sueño en el menú lateral para activar esta gráfica.")
+
+    # Gráfica 2: Volumen Semanal de Carrera
+    st.subheader("2. Volumen Acumulado (Distancia)")
+    if not df_act.empty and col_dist and col_fecha_act:
+        try:
+            df_act_sorted = df_act.sort_values(by=col_fecha_act)
+            fig2 = px.bar(df_act_sorted, x=col_fecha_act, y=col_dist, title="Carga por Sesión")
+            st.plotly_chart(fig2, use_container_width=True)
+        except Exception as e:
+            st.error(f"No se pudo generar el gráfico 2: {e}")
+    else:
+        st.info("Configura las columnas de Actividades en el menú lateral para activar esta gráfica.")
+        
+    # Gráfica 3: Ritmo Medio
+    st.subheader("3. Análisis de Ritmo Medio")
+    if not df_act.empty and col_ritmo and col_fecha_act:
+        try:
+            df_act_sorted = df_act.sort_values(by=col_fecha_act)
+            fig3 = px.line(df_act_sorted, x=col_fecha_act, y=col_ritmo, markers=True, title="Evolución de Ritmos")
+            st.plotly_chart(fig3, use_container_width=True)
+        except Exception as e:
+            st.error(f"No se pudo generar el gráfico 3: {e}")
+    else:
+        st.info("Configura la columna de Ritmo en el menú lateral para visualizar la evolución.")
+
+    # Gráficas de control manual (Fuerza y Escalada)
+    st.subheader("4. Control de Cargas de Fuerza Máxima")
+    st.caption("Se alimentará dinámicamente de tus inputs de fuerza guardados.")
+    
+    st.subheader("5. Progresión en Escalada (Grado Máximo)")
+    st.caption("Se alimentará dinámicamente en base a tus registros de bloque y vía.")
 
 # --- PÁGINA: HISTÓRICOS ---
 elif opcion_navegacion == "📜 Históricos":
     st.title("📜 Históricos Anuales")
-    st.info("Módulo preparado para las analíticas macro-anuales.")
+    st.info("Sección preparada para almacenar los cierres de temporada.")
