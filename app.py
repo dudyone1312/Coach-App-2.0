@@ -4,303 +4,248 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import os
+import re
 
-# CONFIGURACIÓN GENERAL
+# --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Hybrid Training Hub", page_icon="🏋️", layout="wide")
 
 FILE_ACTIVIDADES = "datos_actividades.csv"
 FILE_SUENO = "datos_sueno.csv"
 
-def cargar_csv(file_path):
-    if os.path.exists(file_path):
+def cargar_datos(ruta):
+    if os.path.exists(ruta):
         try:
-            return pd.read_csv(file_path)
-        except Exception:
+            return pd.read_csv(ruta)
+        except:
             return pd.DataFrame()
     return pd.DataFrame()
 
 if 'df_actividades' not in st.session_state:
-    st.session_state['df_actividades'] = cargar_csv(FILE_ACTIVIDADES)
+    st.session_state['df_actividades'] = cargar_datos(FILE_ACTIVIDADES)
 if 'df_sueno' not in st.session_state:
-    st.session_state['df_sueno'] = cargar_csv(FILE_SUENO)
+    st.session_state['df_sueno'] = cargar_datos(FILE_SUENO)
 
-# PARSEADOR ULTRA-ROBUSTO DE FECHAS DE GARMIN
-def normalizar_fechas(serie):
-    if serie.empty:
-        return pd.to_datetime(serie)
-    # Limpieza de residuos de texto comunes en exportaciones (ej: "mié., 10 de jun.")
-    s_limpia = serie.astype(str).str.replace(r'^[A-Za-záéíóú.,\s]+,\s*', '', regex=True)
-    s_limpia = s_limpia.str.replace(r' de\s*', ' ', regex=True).str.strip()
-    return pd.to_datetime(s_limpia, errors='coerce', format='mixed')
+# --- 2. MOTORES DE LECTURA ROBUSTA ---
+def limpiar_fechas(serie):
+    if serie.empty: return pd.to_datetime(serie)
+    # Elimina días de la semana y texto sobrante (Ej: "mié., 10 de jun.")
+    s = serie.astype(str).str.replace(r'^[A-Za-záéíóú.,\s]+,\s*', '', regex=True)
+    s = s.str.replace(r' de\s*', ' ', regex=True).str.strip()
+    return pd.to_datetime(s, errors='coerce')
 
-# PARSEADORES DE MÉTRICAS NUMÉRICAS
-def limpiar_distancia(serie):
-    return pd.to_numeric(serie.astype(str).str.replace(' km', '', case=False).str.replace(',', '.').str.strip(), errors='coerce')
-
-def ritmo_a_decimal(serie):
-    def transformar(val):
-        try:
-            v = str(val).lower().replace('min/km', '').strip()
-            if ':' in v:
-                partes = v.split(':')
-                if len(partes) == 2:
-                    return float(partes[0]) + (float(partes[1]) / 60.0)
-                elif len(partes) == 3:
-                    return (float(partes[0]) * 60) + float(partes[1]) + (float(partes[2]) / 60.0)
-            return float(v.replace(',', '.'))
-        except Exception:
-            return None
-    return serie.apply(transformar)
-
-# DETECTOR INTELIGENTE DE COLUMNAS (Soporta Inglés y Español)
-def buscar_columna(df, palabras):
-    for c in df.columns:
-        if any(p in str(c).lower() for p in palabras):
-            return c
+def detectar_columna(df, palabras_clave):
+    for col in df.columns:
+        if any(p in str(col).lower() for p in palabras_clave):
+            return col
     return None
 
-# PROCESAMIENTO AUTOMÁTICO DE LOS DATOS ALMACENADOS
-dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-actividades_semana_actual = {dia: [] for dia in dias_semana}
+def limpiar_numeros(serie):
+    # Extrae solo los números (ej: "5,3 km" -> 5.3)
+    s = serie.astype(str).str.replace(',', '.').str.extract(r'([0-9]*\.?[0-9]+)')[0]
+    return pd.to_numeric(s, errors='coerce')
 
+def limpiar_ritmos(serie):
+    def a_decimal(val):
+        val = str(val).split(' ')[0] # Quitar "min/km"
+        if ':' in val:
+            partes = val.split(':')
+            if len(partes) == 2: return float(partes[0]) + (float(partes[1]) / 60.0)
+        return None
+    return serie.apply(a_decimal)
+
+# --- 3. PROCESAMIENTO CENTRALIZADO ---
 df_act = st.session_state['df_actividades']
 df_sueno = st.session_state['df_sueno']
+dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+actividades_semana_ui = {dia: [] for dia in dias_semana}
 
-# Mapeos automáticos
-col_f_act = buscar_columna(df_act, ['fecha', 'date', 'comienzo', 'start']) if not df_act.empty else None
-col_tipo_act = buscar_columna(df_act, ['tipo', 'type', 'actividad']) if not df_act.empty else None
-col_dist_act = buscar_columna(df_act, ['distancia', 'distance', 'km']) if not df_act.empty else None
-col_ritmo_act = buscar_columna(df_act, ['ritmo', 'pace', 'velocidad', 'avg pace']) if not df_act.empty else None
-col_fc_act = buscar_columna(df_act, ['fc media', 'avg hr', 'frecuencia', 'cardíaca']) if not df_act.empty else None
+col_fecha_act = detectar_columna(df_act, ['fecha', 'date', 'comienzo', 'start'])
+col_tipo_act = detectar_columna(df_act, ['tipo', 'type', 'actividad', 'activity'])
 
-# Extracción para Microciclo e Inicio (Semana en curso)
-if not df_act.empty and col_f_act and col_tipo_act:
-    df_act['Fecha_Procesada'] = normalizar_fechas(df_act[col_f_act])
-    hoy = datetime.today()
-    lunes_act = hoy - timedelta(days=hoy.weekday())
-    domingo_act = lunes_act + timedelta(days=6)
+if not df_act.empty and col_fecha_act:
+    df_act['Fecha_Real'] = limpiar_fechas(df_act[col_fecha_act])
     
-    df_filtrado = df_act[(df_act['Fecha_Procesada'].dt.date >= lunes_act.date()) & (df_act['Fecha_Procesada'].dt.date <= domingo_act.date())]
-    for _, fila in df_filtrado.iterrows():
-        if pd.notna(fila['Fecha_Procesada']):
-            nom_dia = dias_semana[fila['Fecha_Procesada'].weekday()]
-            t = fila[col_tipo_act]
-            d = f"{fila[col_dist_act]} km" if col_dist_act and pd.notna(fila[col_dist_act]) else ""
-            r = f" a {fila[col_ritmo_act]}" if col_ritmo_act and pd.notna(fila[col_ritmo_act]) else ""
-            actividades_semana_actual[nom_dia].append(f"🏃‍♂️ {t}: {d}{r}")
+    # FIX CRÍTICO: Buscar la semana MÁS RECIENTE de los datos, no el calendario actual
+    fecha_maxima = df_act['Fecha_Real'].max()
+    if pd.notna(fecha_maxima):
+        lunes_ref = fecha_maxima - timedelta(days=fecha_maxima.weekday())
+        domingo_ref = lunes_ref + timedelta(days=6)
+        
+        df_semana = df_act[(df_act['Fecha_Real'] >= lunes_ref) & (df_act['Fecha_Real'] <= domingo_ref)]
+        
+        for _, fila in df_semana.iterrows():
+            if pd.notna(fila['Fecha_Real']):
+                dia_nombre = dias_semana[fila['Fecha_Real'].weekday()]
+                tipo = fila[col_tipo_act] if col_tipo_act else "Entreno"
+                actividades_semana_ui[dia_nombre].append(f"🏃‍♂️ {tipo}")
 
-# INTERFAZ LATERAL
-st.sidebar.title("Panel de Control")
-opcion = st.sidebar.radio("Navegación:", ["🏠 Inicio", "🗓️ Microciclo", "🗺️ Macrociclo", "📥 Ingresar Datos", "📈 Métricas y Evolución", "📜 Históricos"])
+# --- 4. PANEL LATERAL DE NAVEGACIÓN ---
+st.sidebar.title("Panel")
+opcion = st.sidebar.radio("Ir a:", ["🏠 Inicio", "🗓️ Microciclo", "🗺️ Macrociclo", "📥 Ingresar Datos", "📈 Métricas y Evolución", "📜 Históricos"])
 
-# --- PÁGINA: INGRESAR DATOS ---
+# DEBUGGER: Para saber qué está leyendo la app realmente
+with st.sidebar.expander("🛠️ Diagnóstico de Datos"):
+    st.write(f"Total Actividades: {len(df_act)}")
+    st.write(f"Total Sueño: {len(df_sueno)}")
+    st.write(f"Col Fecha Detectada: {col_fecha_act}")
+
+# --- PÁGINAS ---
+
 if opcion == "📥 Ingresar Datos":
-    st.title("📥 Carga de Datos Históricos y Actividades")
-    st.write("Sube tus archivos consolidados aquí. La aplicación los procesará y actualizará todo el ecosistema de forma inmediata.")
+    st.title("📥 Sube tus archivos de Garmin")
+    st.info("💡 Por favor, sube archivos **.CSV** exportados desde Garmin Connect Web. Los .fit están permitidos pero pueden perder formato.")
     
-    archivos = st.file_uploader("Arrastra tus archivos CSV de Garmin Connect", type=["csv"], accept_multiple_files=True)
+    archivos = st.file_uploader("Arrastra aquí tus archivos", type=["csv", "fit"], accept_multiple_files=True)
     if archivos:
         for arc in archivos:
+            if arc.name.endswith('.fit'):
+                st.warning(f"⚠️ El archivo {arc.name} es formato .fit. Streamlit requiere CSV para leer columnas de texto correctamente. Si no ves los datos, exporta a CSV.")
+                continue
             try:
                 df_nuevo = pd.read_csv(arc)
-                cols_str = "".join(arc.name.lower() + "".join(df_nuevo.columns).lower())
+                nombres = (arc.name + "".join(df_nuevo.columns)).lower()
                 
-                if any(p in cols_str for p in ["sueño", "sleep", "vfc", "hrv", "reposo", "resting", "wellness"]):
-                    if not st.session_state['df_sueno'].empty:
-                        df_total = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                    else:
-                        df_total = df_nuevo
-                    st.session_state['df_sueno'] = df_total
-                    df_total.to_csv(FILE_SUENO, index=False)
-                    st.success(f"💥 Datos de Salud cargados correctamente.")
+                # Clasificador automático
+                if any(p in nombres for p in ["sueño", "sleep", "vfc", "hrv", "reposo", "resting", "wellness"]):
+                    st.session_state['df_sueno'] = pd.concat([st.session_state['df_sueno'], df_nuevo]).drop_duplicates()
+                    st.session_state['df_sueno'].to_csv(FILE_SUENO, index=False)
+                    st.success("💤 Datos de salud actualizados.")
                 else:
-                    if not st.session_state['df_actividades'].empty:
-                        df_total = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates().reset_index(drop=True)
-                    else:
-                        df_total = df_nuevo
-                    st.session_state['df_actividades'] = df_total
-                    df_total.to_csv(FILE_ACTIVIDADES, index=False)
-                    st.success(f"💥 Historial de Actividades fusionado con éxito.")
+                    st.session_state['df_actividades'] = pd.concat([st.session_state['df_actividades'], df_nuevo]).drop_duplicates()
+                    st.session_state['df_actividades'].to_csv(FILE_ACTIVIDADES, index=False)
+                    st.success("🏃‍♂️ Actividades actualizadas.")
             except Exception as e:
-                st.error(f"Error con el archivo {arc.name}: {e}")
+                st.error(f"Error leyendo {arc.name}: {e}")
         st.rerun()
 
-# --- PÁGINA: INICIO ---
 elif opcion == "🏠 Inicio":
-    st.title("Hub de Entrenamiento Híbrido")
-    st.subheader(f"{dias_semana[datetime.today().weekday()]}, {datetime.today().strftime('%d/%m/%Y')}")
+    st.title("Hub de Entrenamiento")
+    st.write("Datos sincronizados con tu semana más reciente.")
     
-    c_izq, c_der = st.columns([3, 2])
-    with c_izq:
-        st.markdown("### 📋 Resumen de la Actividad de Hoy")
-        hoy_texto = dias_semana[datetime.today().weekday()]
-        acts_hoy = actividades_semana_actual[hoy_texto]
-        if acts_hoy:
-            for ac in acts_hoy:
-                st.info(ac)
-        else:
-            st.caption("No hay entrenamientos registrados para el día de hoy todavía.")
-            
-    with c_der:
-        st.markdown("### 🚦 Predisposición (Semáforo)")
-        if not df_sueno.empty:
-            st.success("🟢 Datos estables. Tu ecosistema fisiológico está conectado correctamente.")
-        else:
-            st.warning("⚠️ Semáforo en espera. Sube datos de salud para activar.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### 📋 Resumen Última Semana")
+        for dia, acts in actividades_semana_ui.items():
+            if acts:
+                st.write(f"**{dia}:** {', '.join(acts)}")
+    with c2:
+        st.markdown("### 🚦 Semáforo")
+        if not df_sueno.empty: st.success("🟢 Datos de salud detectados. Sistema funcionando.")
+        else: st.warning("⚠️ Sube datos de salud/VFC para activar.")
 
-# --- PÁGINA: MICROCICLO ---
 elif opcion == "🗓️ Microciclo":
-    st.title("🗓️ Programación Semanal (Microciclo Real)")
-    c1, c2, c3 = st.columns(3)
-    c4, c5, c6, c7 = st.columns(4)
-    bloques_columnas = [c1, c2, c3, c4, c5, c6, c7]
-    
+    st.title("🗓️ Microciclo (Última semana registrada)")
+    cols = st.columns(7)
     for idx, dia in enumerate(dias_semana):
-        with bloques_columnas[idx]:
-            st.markdown(f"#### {dia}")
-            lista_acts = actividades_semana_actual[dia]
-            if lista_acts:
-                html_acts = "".join([f"<div style='margin-bottom:6px; color:#ffcc00; font-size:0.9em;'>{a}</div>" for a in lista_acts])
-            else:
-                html_acts = "<span style='color:#666; font-size:0.85em;'>Sin registros de actividad</span>"
-                
-            st.markdown(f"""
-                <div style="background-color: #1e1e1e; padding: 12px; border-radius: 8px; border: 1px solid #333; min-height: 120px;">
-                    {html_acts}
-                </div>
-            """, unsafe_allow_html=True)
+        with cols[idx]:
+            st.markdown(f"**{dia}**")
+            for act in actividades_semana_ui[dia]:
+                st.info(act)
 
-# --- PÁGINA: MACROCICLO ---
 elif opcion == "🗺️ Macrociclo":
-    st.title("🗺️ Estructura del Macrociclo Anual")
-    st.table(pd.DataFrame({
-        "Mes": ["Enero - Mar Ayuno", "Abril - Junio", "Julio - Septiembre", "Octubre - Diciembre"],
-        "Enfoque": ["Volumen Base", "Intensificación", "Competición / Pico", "Transición / Fuerza Máx"]
-    }))
+    st.title("🗺️ Macrociclo")
+    st.table(pd.DataFrame({"Fase": ["Base", "Pico", "Descarga"], "Objetivo": ["Volumen", "Intensidad", "Recuperación"]}))
 
-# --- PÁGINA: MÉTRICAS Y EVOLUCIÓN ---
 elif opcion == "📈 Métricas y Evolución":
-    st.title("📈 Cuadro de Mando de Adaptaciones Fisiológicas")
-    
-    b1, b2 = st.columns(2)
-    
-    with b1:
-        # 1. FC Reposo y VFC Basal
-        st.markdown("#### 1. FC Reposo vs VFC Basal (Quincena)")
-        col_fs = buscar_columna(df_sueno, ['fecha', 'date', 'day'])
-        col_v = buscar_columna(df_sueno, ['vfc', 'hrv'])
-        col_r = buscar_columna(df_sueno, ['reposo', 'resting', 'rhr'])
+    st.title("📈 Cuadro de Mando")
+    if df_act.empty and df_sueno.empty:
+        st.warning("⚠️ No hay datos subidos. Ve a 'Ingresar Datos' y sube tus CSV.")
+    else:
+        b1, b2 = st.columns(2)
         
-        if not df_sueno.empty and col_fs and col_v and col_r:
-            df_sueno['Fecha_C'] = normalizar_fechas(df_sueno[col_fs])
-            df_q = df_sueno.dropna(subset=['Fecha_C']).sort_values(by='Fecha_C').tail(15)
-            fig1 = go.Figure()
-            fig1.add_trace(go.Scatter(x=df_q['Fecha_C'], y=pd.to_numeric(df_q[col_v], errors='coerce'), name="VFC (ms)", mode='lines+markers', line=dict(color='#4da6ff')))
-            fig1.add_trace(go.Scatter(x=df_q['Fecha_C'], y=pd.to_numeric(df_q[col_r], errors='coerce'), name="FC Reposo (ppm)", mode='lines+markers', line=dict(color='#ff4d4d')))
-            fig1.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=230, template="plotly_dark")
-            st.plotly_chart(fig1, use_container_width=True)
-        else:
-            st.caption("Faltan datos de salud válidos para estructurar la Gráfica 1.")
+        with b1:
+            st.markdown("#### 1. FC Reposo vs VFC (Quincena)")
+            c_fecha_s = detectar_columna(df_sueno, ['fecha', 'date', 'day'])
+            c_vfc = detectar_columna(df_sueno, ['vfc', 'hrv'])
+            c_rep = detectar_columna(df_sueno, ['reposo', 'resting', 'rhr'])
+            
+            if c_fecha_s and c_vfc and c_rep:
+                df_sueno['F'] = limpiar_fechas(df_sueno[c_fecha_s])
+                df_q = df_sueno.dropna(subset=['F']).sort_values('F').tail(15)
+                fig1 = go.Figure()
+                fig1.add_trace(go.Scatter(x=df_q['F'], y=limpiar_numeros(df_q[c_vfc]), name="VFC", line=dict(color='#4da6ff')))
+                fig1.add_trace(go.Scatter(x=df_q['F'], y=limpiar_numeros(df_q[c_rep]), name="FC Reposo", line=dict(color='#ff4d4d')))
+                fig1.update_layout(height=250, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig1, use_container_width=True)
+            else:
+                st.error("No encuentro las columnas de Fecha, VFC o FC Reposo en el archivo de salud.")
 
-        # 3. Ritmo medio por zonas de FC
-        st.markdown("#### 3. Ritmo Medio min/km en las 5 Zonas de FC")
-        if not df_act.empty and col_f_act and col_fc_act and col_ritmo_act:
-            try:
-                df_act['FC_Num'] = pd.to_numeric(df_act[col_fc_act], errors='coerce')
-                df_act['Ritmo_Num'] = ritmo_a_decimal(df_act[col_ritmo_act])
+            st.markdown("#### 3. Ritmo por Zonas (min/km)")
+            c_ritmo = detectar_columna(df_act, ['ritmo', 'pace', 'avg pace'])
+            c_fc = detectar_columna(df_act, ['fc media', 'avg hr', 'frecuencia'])
+            if c_ritmo and c_fc and col_fecha_act:
+                df_act['FC'] = limpiar_numeros(df_act[c_fc])
+                df_act['Ritmo'] = limpiar_ritmos(df_act[c_ritmo])
+                df_c = df_act.dropna(subset=['FC', 'Ritmo']).copy()
                 
-                # Clasificar en las 5 zonas estándar de carrera
-                def asignar_zona(hr):
+                def zona(hr):
                     if hr < 130: return 'Z1'
                     elif hr < 145: return 'Z2'
                     elif hr < 160: return 'Z3'
                     elif hr < 175: return 'Z4'
                     else: return 'Z5'
                 
-                df_carrera = df_act.dropna(subset=['FC_Num', 'Ritmo_Num']).copy()
-                df_carrera['Zona'] = df_carrera['FC_Num'].apply(asignar_zona)
-                df_zonas = df_carrera.groupby('Zona')['Ritmo_Num'].mean().reindex(['Z1', 'Z2', 'Z3', 'Z4', 'Z5']).reset_index()
+                if not df_c.empty:
+                    df_c['Zona'] = df_c['FC'].apply(zona)
+                    df_z = df_c.groupby('Zona')['Ritmo'].mean().reset_index()
+                    fig3 = px.line(df_z, x='Zona', y='Ritmo', markers=True, template="plotly_dark")
+                    fig3.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10))
+                    st.plotly_chart(fig3, use_container_width=True)
+                else:
+                    st.warning("No hay actividades con Frecuencia Cardíaca y Ritmo registrados.")
+            else:
+                st.error("Faltan columnas de Ritmo Medio o FC Media.")
+
+        with b2:
+            st.markdown("#### 2. Carga Aguda vs Crónica")
+            c_dist = detectar_columna(df_act, ['distancia', 'distance', 'km'])
+            if c_dist and col_fecha_act:
+                df_act['D'] = limpiar_numeros(df_act[c_dist])
+                df_d = df_act.groupby('Fecha_Real')['D'].sum().reset_index().sort_values('Fecha_Real')
+                df_d['Aguda'] = df_d['D'].rolling(7, min_periods=1).mean()
+                df_d['Cronica'] = df_d['D'].rolling(28, min_periods=1).mean()
                 
-                fig3 = px.line(df_zonas, x='Zona', y='Ritmo_Num', markers=True, template="plotly_dark")
-                fig3.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=230)
-                fig3.update_yaxes(title="Ritmo Decimal (minutos)")
-                st.plotly_chart(fig3, use_container_width=True)
-            except Exception:
-                st.caption("Error al calcular ritmos por zonas.")
-        else:
-            st.caption("Sube el historial completo de actividades de carrera para graficar tus 5 zonas.")
-
-    with b2:
-        # 2. Estado de entreno (Aguda vs Crónica)
-        st.markdown("#### 2. Túnel de Carga Aguda vs Crónica (Estilo Garmin)")
-        if not df_act.empty and col_f_act and col_dist_act:
-            df_act['Fecha_C'] = normalizar_fechas(df_act[col_f_act])
-            df_act['Dist_Num'] = limpiar_distancia(df_act[col_dist_act])
-            df_d = df_act.dropna(subset=['Fecha_C']).groupby(df_act['Fecha_C'].dt.date)['Dist_Num'].sum().reset_index()
-            df_d.columns = ['Fecha', 'Volumen']
-            df_d = df_d.sort_values(by='Fecha')
-            
-            df_d['Aguda'] = df_d['Volumen'].rolling(window=7, min_periods=1).mean()
-            df_d['Cronica'] = df_d['Volumen'].rolling(window=28, min_periods=1).mean()
-            
-            df_v = df_d.tail(30)
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=df_v['Fecha'], y=df_v['Cronica']*1.3, name="Túnel Max", line=dict(color='rgba(0,255,0,0.1)')))
-            fig2.add_trace(go.Scatter(x=df_v['Fecha'], y=df_v['Cronica']*0.8, name="Túnel Min", line=dict(color='rgba(0,255,0,0.1)'), fill='tonexty'))
-            fig2.add_trace(go.Scatter(x=df_v['Fecha'], y=df_v['Aguda'], name="Carga Real", line=dict(color='#ffcc00', width=2)))
-            fig2.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=230, template="plotly_dark")
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.caption("Se requiere el volumen total de kilómetros para calcular la relación de carga.")
-
-        # 5. KM semanales en un mes
-        st.markdown("#### 5. Kilómetros Recorridos por Semana (Último Mes)")
-        if not df_act.empty and col_f_act and col_dist_act:
-            df_act['Fecha_C'] = normalizar_fechas(df_act[col_f_act])
-            df_act['Dist_Num'] = limpiar_distancia(df_act[col_dist_act])
-            df_m = df_act.dropna(subset=['Fecha_C', 'Dist_Num']).resample('W', on='Fecha_C')['Dist_Num'].sum().reset_index().tail(4)
-            df_m['Fecha_C'] = df_m['Fecha_C'].dt.strftime('Semana %V')
-            
-            fig5 = px.bar(df_m, x='Fecha_C', y='Dist_Num', template="plotly_dark", color_discrete_sequence=['#0084ff'])
-            fig5.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=230)
-            st.plotly_chart(fig5, use_container_width=True)
-        else:
-            st.caption("Subiendo tus actividades acumuladas verás la progresión en bloques de 4 semanas.")
-
-    st.write("---")
-    b3, b4 = st.columns(2)
-    
-    with b3:
-        # 4. Tabla de pesos máximos levantados
-        st.markdown("#### 4. Tabla de Pesos Máximos Levantados (Fuerza)")
-        col_peso = buscar_columna(df_act, ['peso', 'weight', 'carga', 'max'])
-        if not df_act.empty and col_tipo_act and col_peso:
-            df_fza = df_act[df_act[col_tipo_act].astype(str).str.lower().str.contains('fuerza|strength')]
-            if not df_fza.empty:
-                st.dataframe(df_fza[[col_f_act, col_peso]].tail(5), use_container_width=True, hide_index=True)
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(x=df_d['Fecha_Real'], y=df_d['Cronica']*1.3, fill=None, line=dict(color='rgba(0,255,0,0.1)')))
+                fig2.add_trace(go.Scatter(x=df_d['Fecha_Real'], y=df_d['Cronica']*0.8, fill='tonexty', line=dict(color='rgba(0,255,0,0.1)')))
+                fig2.add_trace(go.Scatter(x=df_d['Fecha_Real'], y=df_d['Aguda'], line=dict(color='#ffcc00')))
+                fig2.update_layout(height=250, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig2, use_container_width=True)
             else:
-                st.caption("No se detectan entrenamientos específicos de Fuerza con registro de carga en tu archivo.")
-        else:
-            st.caption("Columna de carga ausente en el archivo consolidado actual.")
+                st.error("Falta columna de Distancia.")
 
-    with b4:
-        # 6. Gráfico de grado máximo de escalada
-        st.markdown("#### 6. Grado Máximo por Semana (Escalada / Bloque)")
-        col_grado = buscar_columna(df_act, ['grado', 'grade', 'dificultad'])
-        if not df_act.empty and col_tipo_act and col_grado:
-            df_esc = df_act[df_act[col_tipo_act].astype(str).str.lower().str.contains('climb|escalada|bloque')]
-            if not df_esc.empty:
-                df_esc['Fecha_C'] = normalizar_fechas(df_esc[col_f_act])
-                df_esc_w = df_esc.resample('W', on='Fecha_C').max().reset_index().tail(4)
-                fig6 = px.line(df_esc_w, x='Fecha_C', y=col_grado, markers=True, template="plotly_dark")
-                fig6.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=200)
-                st.plotly_chart(fig6, use_container_width=True)
-            else:
-                st.caption("No hay sesiones de escalada o bloque registradas dentro del CSV de actividades.")
-        else:
-            st.caption("Sube métricas avanzadas que contengan la dificultad de escalada para activar la gráfica.")
+            st.markdown("#### 5. KM Semanales (Mes)")
+            if c_dist and col_fecha_act:
+                df_m = df_act.dropna(subset=['Fecha_Real', 'D']).resample('W', on='Fecha_Real')['D'].sum().reset_index().tail(4)
+                df_m['Semana'] = df_m['Fecha_Real'].dt.strftime('Sem %V')
+                fig5 = px.bar(df_m, x='Semana', y='D', template="plotly_dark")
+                fig5.update_layout(height=250, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig5, use_container_width=True)
 
-# --- PÁGINA: HISTORICOS ---
+        st.write("---")
+        c_titulos = detectar_columna(df_act, ['título', 'title', 'nombre', 'name'])
+        
+        b3, b4 = st.columns(2)
+        with b3:
+            st.markdown("#### 4. Récords Fuerza (Extraídos del Título)")
+            st.caption("Escribe el peso en el título de Garmin (Ej: 'Sentadilla 120kg')")
+            if c_titulos:
+                fuerza = df_act[df_act[c_titulos].astype(str).str.contains(r'\d+kg|\d+ kg', case=False, na=False)]
+                if not fuerza.empty:
+                    st.dataframe(fuerza[[col_fecha_act, c_titulos]].tail(5), hide_index=True)
+                else:
+                    st.info("No detecto 'kg' en los títulos de tus entrenos.")
+                    
+        with b4:
+            st.markdown("#### 6. Grados Escalada (Extraídos del Título)")
+            st.caption("Escribe el grado en el título (Ej: 'Bloque 6b' o 'Vía 7a')")
+            if c_titulos:
+                escalada = df_act[df_act[c_titulos].astype(str).str.contains(r'6a|6b|6c|7a|7b|7c|8a|v3|v4|v5', case=False, na=False)]
+                if not escalada.empty:
+                    st.dataframe(escalada[[col_fecha_act, c_titulos]].tail(5), hide_index=True)
+                else:
+                    st.info("No detecto grados estándar en los títulos.")
+
 elif opcion == "📜 Históricos":
-    st.title("📜 Historial Completo de Temporadas")
-    st.info("Pestaña de lectura limpia y almacenamiento estable.")
+    st.title("📜 Historial Completo")
+    st.info("Datos anuales consolidados.")
